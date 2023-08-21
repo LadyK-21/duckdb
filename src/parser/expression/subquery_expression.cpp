@@ -2,6 +2,8 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/field_writer.hpp"
+#include "duckdb/common/serializer/format_deserializer.hpp"
+#include "duckdb/common/serializer/format_serializer.hpp"
 
 namespace duckdb {
 
@@ -26,25 +28,25 @@ string SubqueryExpression::ToString() const {
 	}
 }
 
-bool SubqueryExpression::Equals(const SubqueryExpression *a, const SubqueryExpression *b) {
-	if (!a->subquery || !b->subquery) {
+bool SubqueryExpression::Equal(const SubqueryExpression &a, const SubqueryExpression &b) {
+	if (!a.subquery || !b.subquery) {
 		return false;
 	}
-	if (!BaseExpression::Equals(a->child.get(), b->child.get())) {
+	if (!ParsedExpression::Equals(a.child, b.child)) {
 		return false;
 	}
-	return a->comparison_type == b->comparison_type && a->subquery_type == b->subquery_type &&
-	       a->subquery->Equals(b->subquery.get());
+	return a.comparison_type == b.comparison_type && a.subquery_type == b.subquery_type &&
+	       a.subquery->Equals(*b.subquery);
 }
 
 unique_ptr<ParsedExpression> SubqueryExpression::Copy() const {
-	auto copy = make_unique<SubqueryExpression>();
+	auto copy = make_uniq<SubqueryExpression>();
 	copy->CopyProperties(*this);
 	copy->subquery = unique_ptr_cast<SQLStatement, SelectStatement>(subquery->Copy());
 	copy->subquery_type = subquery_type;
 	copy->child = child ? child->Copy() : nullptr;
 	copy->comparison_type = comparison_type;
-	return move(copy);
+	return std::move(copy);
 }
 
 void SubqueryExpression::Serialize(FieldWriter &writer) const {
@@ -64,12 +66,12 @@ unique_ptr<ParsedExpression> SubqueryExpression::Deserialize(ExpressionType type
 	auto subquery_type = reader.ReadRequired<SubqueryType>();
 	auto subquery = SelectStatement::Deserialize(source);
 
-	auto expression = make_unique<SubqueryExpression>();
+	auto expression = make_uniq<SubqueryExpression>();
 	expression->subquery_type = subquery_type;
-	expression->subquery = move(subquery);
+	expression->subquery = std::move(subquery);
 	expression->child = reader.ReadOptional<ParsedExpression>(nullptr);
 	expression->comparison_type = reader.ReadRequired<ExpressionType>();
-	return move(expression);
+	return std::move(expression);
 }
 
 } // namespace duckdb

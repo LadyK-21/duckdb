@@ -14,11 +14,14 @@ namespace duckdb {
 
 class NotNullConstraint : public Constraint {
 public:
-	DUCKDB_API explicit NotNullConstraint(column_t index);
+	static constexpr const ConstraintType TYPE = ConstraintType::NOT_NULL;
+
+public:
+	DUCKDB_API explicit NotNullConstraint(LogicalIndex index);
 	DUCKDB_API ~NotNullConstraint() override;
 
 	//! Column index this constraint pertains to
-	column_t index;
+	LogicalIndex index;
 
 public:
 	DUCKDB_API string ToString() const override;
@@ -29,6 +32,9 @@ public:
 	DUCKDB_API void Serialize(FieldWriter &writer) const override;
 	//! Deserializes a NotNullConstraint
 	DUCKDB_API static unique_ptr<Constraint> Deserialize(FieldReader &source);
+
+	DUCKDB_API void FormatSerialize(FormatSerializer &serializer) const override;
+	DUCKDB_API static unique_ptr<Constraint> FormatDeserialize(FormatDeserializer &deserializer);
 };
 
 } // namespace duckdb

@@ -11,6 +11,7 @@
 #include "duckdb/common/enums/catalog_type.hpp"
 #include "duckdb/common/field_writer.hpp"
 #include "duckdb/parser/parsed_data/parse_info.hpp"
+#include "duckdb/planner/plan_serialization.hpp"
 
 namespace duckdb {
 struct AlterInfo;
@@ -27,15 +28,21 @@ enum class OnCreateConflict : uint8_t {
 };
 
 struct CreateInfo : public ParseInfo {
-	explicit CreateInfo(CatalogType type, string schema = DEFAULT_SCHEMA)
-	    : type(type), schema(schema), on_conflict(OnCreateConflict::ERROR_ON_CONFLICT), temporary(false),
-	      internal(false) {
+public:
+	static constexpr const ParseInfoType TYPE = ParseInfoType::CREATE_INFO;
+
+public:
+	explicit CreateInfo(CatalogType type, string schema = DEFAULT_SCHEMA, string catalog_p = INVALID_CATALOG)
+	    : ParseInfo(TYPE), type(type), catalog(std::move(catalog_p)), schema(schema),
+	      on_conflict(OnCreateConflict::ERROR_ON_CONFLICT), temporary(false), internal(false) {
 	}
 	~CreateInfo() override {
 	}
 
 	//! The to-be-created catalog type
 	CatalogType type;
+	//! The catalog name of the entry
+	string catalog;
 	//! The schema name of the entry
 	string schema;
 	//! What to do on create conflict
@@ -56,6 +63,10 @@ public:
 	void Serialize(Serializer &serializer) const;
 
 	static unique_ptr<CreateInfo> Deserialize(Deserializer &deserializer);
+	static unique_ptr<CreateInfo> Deserialize(Deserializer &deserializer, PlanDeserializationState &state);
+
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<CreateInfo> FormatDeserialize(FormatDeserializer &deserializer);
 
 	virtual unique_ptr<CreateInfo> Copy() const = 0;
 

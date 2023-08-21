@@ -3,6 +3,9 @@
 # group: [date]
 
 statement ok
+SET default_null_order='nulls_first';
+
+statement ok
 PRAGMA enable_verification
 
 statement ok
@@ -380,6 +383,45 @@ WHERE p IS DISTINCT FROM f;
 
 endloop
 
+# Function-only parts
+query II
+SELECT d, epoch_ns(d) 
+FROM dates 
+WHERE d != '0044-03-15 (BC)' OR d IS NULL
+ORDER BY ALL;
+----
+NULL	NULL
+-infinity	NULL
+1992-01-01	694224000000000000
+1992-03-03	699580800000000000
+1992-05-05	705024000000000000
+2022-01-01	1640995200000000000
+infinity	NULL
+
+query II
+SELECT d, epoch_us(d) FROM dates ORDER BY ALL;
+----
+NULL	NULL
+-infinity	NULL
+0044-03-15 (BC)	-63517824000000000
+1992-01-01	694224000000000
+1992-03-03	699580800000000
+1992-05-05	705024000000000
+2022-01-01	1640995200000000
+infinity	NULL
+
+query II
+SELECT d, epoch_ms(d) FROM dates ORDER BY ALL;
+----
+NULL	NULL
+-infinity	NULL
+0044-03-15 (BC)	-63517824000000
+1992-01-01	694224000000
+1992-03-03	699580800000
+1992-05-05	705024000000
+2022-01-01	1640995200000
+infinity	NULL
+
 #
 # Structs
 #
@@ -454,6 +496,15 @@ NULL	NULL
 1992-05-05	{'isoyear': 1992, 'week': 19, 'yearweek': 199219}
 2022-01-01	{'isoyear': 2021, 'week': 52, 'yearweek': 202152}
 infinity	{'isoyear': NULL, 'week': NULL, 'yearweek': NULL}
+
+# Selective filtering (Issue #5342)
+query II
+SELECT d, DATE_PART(['year', 'month', 'day'], d) AS parts
+FROM dates
+WHERE s = 'day'
+ORDER BY 1;
+----
+1992-05-05	{'year': 1992, 'month': 5, 'day': 5}
 
 # Invalid parts
 

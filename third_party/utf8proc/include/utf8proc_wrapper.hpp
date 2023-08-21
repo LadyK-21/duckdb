@@ -3,11 +3,12 @@
 #include <string>
 #include <cassert>
 #include <cstring>
+#include <cstdint>
 
 namespace duckdb {
 
 enum class UnicodeType { INVALID, ASCII, UNICODE };
-enum class UnicodeInvalidReason { BYTE_MISMATCH, NULL_BYTE, INVALID_UNICODE };
+enum class UnicodeInvalidReason { BYTE_MISMATCH, INVALID_UNICODE };
 
 class Utf8Proc {
 public:

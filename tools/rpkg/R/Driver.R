@@ -25,12 +25,12 @@ drv_to_string <- function(drv) {
 #'
 #' @import methods DBI
 #' @export
-duckdb <- function(dbdir = DBDIR_MEMORY, read_only = FALSE, bigint="numeric", config = list()) {
+duckdb <- function(dbdir = DBDIR_MEMORY, read_only = FALSE, bigint = "numeric", config = list()) {
   check_flag(read_only)
 
   switch(bigint,
     numeric = {
-        # fine
+      # fine
     },
     integer64 = {
       if (!is_installed("bit64")) {
@@ -39,6 +39,11 @@ duckdb <- function(dbdir = DBDIR_MEMORY, read_only = FALSE, bigint="numeric", co
     },
     stop(paste("Unsupported bigint configuration", bigint))
   )
+
+  # R packages are not allowed to write extensions into home directory, so use R_user_dir instead
+  if (!("extension_directory" %in% names(config))) {
+    config["extension_directory"] <- tools::R_user_dir("duckdb", "data")
+  }
 
   new(
     "duckdb_driver",
@@ -66,6 +71,48 @@ duckdb_shutdown <- function(drv) {
   }
   rapi_shutdown(drv@database_ref)
   invisible(TRUE)
+}
+
+#' @description
+#' Return an [adbcdrivermanager::adbc_driver()] for use with Arrow Database
+#' Connectivity via the adbcdrivermanager package.
+#'
+#' @return An object of class "adbc_driver"
+#' @rdname duckdb
+#' @export
+#' @examplesIf requireNamespace("adbcdrivermanager", quietly = TRUE)
+#' library(adbcdrivermanager)
+#' with_adbc(db <- adbc_database_init(duckdb_adbc()), {
+#'   as.data.frame(read_adbc(db, "SELECT 1 as one;"))
+#' })
+duckdb_adbc <- function() {
+  init_func <- structure(rapi_adbc_init_func(), class = "adbc_driver_init_func")
+  adbcdrivermanager::adbc_driver(init_func, subclass = "duckdb_driver_adbc")
+}
+
+# Registered in zzz.R
+adbc_database_init.duckdb_driver_adbc <- function(driver, ...) {
+  adbcdrivermanager::adbc_database_init_default(
+    driver,
+    list(...),
+    subclass = "duckdb_database_adbc"
+  )
+}
+
+adbc_connection_init.duckdb_database_adbc <- function(database, ...) {
+  adbcdrivermanager::adbc_connection_init_default(
+    database,
+    list(...),
+    subclass = "duckdb_connection_adbc"
+  )
+}
+
+adbc_statement_init.duckdb_connection_adbc <- function(connection, ...) {
+  adbcdrivermanager::adbc_statement_init_default(
+    connection,
+    list(...),
+    subclass = "duckdb_statement_adbc"
+  )
 }
 
 is_installed <- function(pkg) {

@@ -15,6 +15,9 @@ namespace duckdb {
 //! LogicalFilter represents a filter operation (e.g. WHERE or HAVING clause)
 class LogicalFilter : public LogicalOperator {
 public:
+	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_FILTER;
+
+public:
 	explicit LogicalFilter(unique_ptr<Expression> expression);
 	LogicalFilter();
 
@@ -24,6 +27,9 @@ public:
 	vector<ColumnBinding> GetColumnBindings() override;
 	void Serialize(FieldWriter &writer) const override;
 	static unique_ptr<LogicalOperator> Deserialize(LogicalDeserializationState &state, FieldReader &reader);
+
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<LogicalOperator> FormatDeserialize(FormatDeserializer &deserializer);
 
 	bool SplitPredicates() {
 		return SplitPredicates(expressions);

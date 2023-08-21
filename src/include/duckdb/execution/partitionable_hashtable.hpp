@@ -17,10 +17,10 @@ struct RadixPartitionInfo {
 	const idx_t n_partitions;
 	const idx_t radix_bits;
 	const hash_t radix_mask;
-	constexpr static idx_t RADIX_SHIFT = 40;
+	const idx_t radix_shift;
 
 	inline hash_t GetHashPartition(hash_t hash) const {
-		return (hash & radix_mask) >> RADIX_SHIFT;
+		return (hash & radix_mask) >> radix_shift;
 	}
 };
 
@@ -28,22 +28,26 @@ typedef vector<unique_ptr<GroupedAggregateHashTable>> HashTableList; // NOLINT
 
 class PartitionableHashTable {
 public:
-	PartitionableHashTable(Allocator &allocator, BufferManager &buffer_manager_p, RadixPartitionInfo &partition_info_p,
+	PartitionableHashTable(ClientContext &context, Allocator &allocator, RadixPartitionInfo &partition_info_p,
 	                       vector<LogicalType> group_types_p, vector<LogicalType> payload_types_p,
 	                       vector<BoundAggregateExpression *> bindings_p);
 
-	idx_t AddChunk(DataChunk &groups, DataChunk &payload, bool do_partition, const vector<idx_t> &filter);
-	void Partition();
+	idx_t AddChunk(DataChunk &groups, DataChunk &payload, bool do_partition, const unsafe_vector<idx_t> &filter);
+	void Partition(bool sink_done);
 	bool IsPartitioned();
 
 	HashTableList GetPartition(idx_t partition);
 	HashTableList GetUnpartitioned();
+	idx_t GetPartitionCount(idx_t partition) const;
+	idx_t GetPartitionSize(idx_t partition) const;
 
 	void Finalize();
 
+	void Append(GroupedAggregateHashTable &ht);
+
 private:
+	ClientContext &context;
 	Allocator &allocator;
-	BufferManager &buffer_manager;
 	vector<LogicalType> group_types;
 	vector<LogicalType> payload_types;
 	vector<BoundAggregateExpression *> bindings;
@@ -51,15 +55,19 @@ private:
 	bool is_partitioned;
 	RadixPartitionInfo &partition_info;
 	vector<SelectionVector> sel_vectors;
-	vector<idx_t> sel_vector_sizes;
+	unsafe_vector<idx_t> sel_vector_sizes;
 	DataChunk group_subset, payload_subset;
 	Vector hashes, hashes_subset;
+	AggregateHTAppendState append_state;
 
 	HashTableList unpartitioned_hts;
-	unordered_map<hash_t, HashTableList> radix_partitioned_hts;
+	vector<HashTableList> radix_partitioned_hts;
+	idx_t tuple_size;
 
 private:
 	idx_t ListAddChunk(HashTableList &list, DataChunk &groups, Vector &group_hashes, DataChunk &payload,
-	                   const vector<idx_t> &filter);
+	                   const unsafe_vector<idx_t> &filter);
+	//! Returns the HT entry size used for intermediate hash tables
+	HtEntryType GetHTEntrySize();
 };
 } // namespace duckdb

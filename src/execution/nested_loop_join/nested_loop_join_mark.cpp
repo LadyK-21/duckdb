@@ -10,8 +10,8 @@ static void TemplatedMarkJoin(Vector &left, Vector &right, idx_t lcount, idx_t r
 	left.ToUnifiedFormat(lcount, left_data);
 	right.ToUnifiedFormat(rcount, right_data);
 
-	auto ldata = (T *)left_data.data;
-	auto rdata = (T *)right_data.data;
+	auto ldata = UnifiedVectorFormat::GetData<T>(left_data);
+	auto rdata = UnifiedVectorFormat::GetData<T>(right_data);
 	for (idx_t i = 0; i < lcount; i++) {
 		if (found_match[i]) {
 			continue;
@@ -29,6 +29,44 @@ static void TemplatedMarkJoin(Vector &left, Vector &right, idx_t lcount, idx_t r
 				found_match[i] = true;
 				break;
 			}
+		}
+	}
+}
+
+static void MarkJoinNested(Vector &left, Vector &right, idx_t lcount, idx_t rcount, bool found_match[],
+                           ExpressionType comparison_type) {
+	Vector left_reference(left.GetType());
+	SelectionVector true_sel(rcount);
+	for (idx_t i = 0; i < lcount; i++) {
+		if (found_match[i]) {
+			continue;
+		}
+		ConstantVector::Reference(left_reference, left, i, rcount);
+		idx_t count;
+		switch (comparison_type) {
+		case ExpressionType::COMPARE_EQUAL:
+			count = VectorOperations::Equals(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_NOTEQUAL:
+			count = VectorOperations::NotEquals(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_LESSTHAN:
+			count = VectorOperations::LessThan(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_GREATERTHAN:
+			count = VectorOperations::GreaterThan(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+			count = VectorOperations::LessThanEquals(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+			count = VectorOperations::GreaterThanEquals(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		default:
+			throw InternalException("Unsupported comparison type for MarkJoinNested");
+		}
+		if (count > 0) {
+			found_match[i] = true;
 		}
 	}
 }
@@ -68,6 +106,13 @@ static void MarkJoinSwitch(Vector &left, Vector &right, idx_t lcount, idx_t rcou
 
 static void MarkJoinComparisonSwitch(Vector &left, Vector &right, idx_t lcount, idx_t rcount, bool found_match[],
                                      ExpressionType comparison_type) {
+	switch (left.GetType().InternalType()) {
+	case PhysicalType::STRUCT:
+	case PhysicalType::LIST:
+		return MarkJoinNested(left, right, lcount, rcount, found_match, comparison_type);
+	default:
+		break;
+	}
 	D_ASSERT(left.GetType() == right.GetType());
 	switch (comparison_type) {
 	case ExpressionType::COMPARE_EQUAL:

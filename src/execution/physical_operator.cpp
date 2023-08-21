@@ -2,12 +2,13 @@
 
 #include "duckdb/common/printer.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/execution/execution_context.hpp"
-#include "duckdb/main/client_context.hpp"
-#include "duckdb/parallel/thread_context.hpp"
 #include "duckdb/common/tree_renderer.hpp"
-#include "duckdb/parallel/pipeline.hpp"
+#include "duckdb/execution/execution_context.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/parallel/meta_pipeline.hpp"
+#include "duckdb/parallel/pipeline.hpp"
+#include "duckdb/parallel/thread_context.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
@@ -27,10 +28,10 @@ void PhysicalOperator::Print() const {
 }
 // LCOV_EXCL_STOP
 
-vector<PhysicalOperator *> PhysicalOperator::GetChildren() const {
-	vector<PhysicalOperator *> result;
+vector<const_reference<PhysicalOperator>> PhysicalOperator::GetChildren() const {
+	vector<const_reference<PhysicalOperator>> result;
 	for (auto &child : children) {
-		result.push_back(child.get());
+		result.push_back(*child);
 	}
 	return result;
 }
@@ -40,11 +41,11 @@ vector<PhysicalOperator *> PhysicalOperator::GetChildren() const {
 //===--------------------------------------------------------------------===//
 // LCOV_EXCL_START
 unique_ptr<OperatorState> PhysicalOperator::GetOperatorState(ExecutionContext &context) const {
-	return make_unique<OperatorState>();
+	return make_uniq<OperatorState>();
 }
 
 unique_ptr<GlobalOperatorState> PhysicalOperator::GetGlobalOperatorState(ClientContext &context) const {
-	return make_unique<GlobalOperatorState>();
+	return make_uniq<GlobalOperatorState>();
 }
 
 OperatorResultType PhysicalOperator::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
@@ -63,16 +64,16 @@ OperatorFinalizeResultType PhysicalOperator::FinalExecute(ExecutionContext &cont
 //===--------------------------------------------------------------------===//
 unique_ptr<LocalSourceState> PhysicalOperator::GetLocalSourceState(ExecutionContext &context,
                                                                    GlobalSourceState &gstate) const {
-	return make_unique<LocalSourceState>();
+	return make_uniq<LocalSourceState>();
 }
 
 unique_ptr<GlobalSourceState> PhysicalOperator::GetGlobalSourceState(ClientContext &context) const {
-	return make_unique<GlobalSourceState>();
+	return make_uniq<GlobalSourceState>();
 }
 
 // LCOV_EXCL_START
-void PhysicalOperator::GetData(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate,
-                               LocalSourceState &lstate) const {
+SourceResultType PhysicalOperator::GetData(ExecutionContext &context, DataChunk &chunk,
+                                           OperatorSourceInput &input) const {
 	throw InternalException("Calling GetData on a node that is not a source!");
 }
 
@@ -90,26 +91,30 @@ double PhysicalOperator::GetProgress(ClientContext &context, GlobalSourceState &
 // Sink
 //===--------------------------------------------------------------------===//
 // LCOV_EXCL_START
-SinkResultType PhysicalOperator::Sink(ExecutionContext &context, GlobalSinkState &gstate, LocalSinkState &lstate,
-                                      DataChunk &input) const {
+SinkResultType PhysicalOperator::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const {
 	throw InternalException("Calling Sink on a node that is not a sink!");
 }
+
 // LCOV_EXCL_STOP
 
-void PhysicalOperator::Combine(ExecutionContext &context, GlobalSinkState &gstate, LocalSinkState &lstate) const {
+SinkCombineResultType PhysicalOperator::Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const {
+	return SinkCombineResultType::FINISHED;
 }
 
 SinkFinalizeType PhysicalOperator::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
-                                            GlobalSinkState &gstate) const {
+                                            OperatorSinkFinalizeInput &input) const {
 	return SinkFinalizeType::READY;
 }
 
+void PhysicalOperator::NextBatch(ExecutionContext &context, GlobalSinkState &state, LocalSinkState &lstate_p) const {
+}
+
 unique_ptr<LocalSinkState> PhysicalOperator::GetLocalSinkState(ExecutionContext &context) const {
-	return make_unique<LocalSinkState>();
+	return make_uniq<LocalSinkState>();
 }
 
 unique_ptr<GlobalSinkState> PhysicalOperator::GetGlobalSinkState(ClientContext &context) const {
-	return make_unique<GlobalSinkState>();
+	return make_uniq<GlobalSinkState>();
 }
 
 idx_t PhysicalOperator::GetMaxThreadMemory(ClientContext &context) {
@@ -120,69 +125,65 @@ idx_t PhysicalOperator::GetMaxThreadMemory(ClientContext &context) {
 	return (max_memory / num_threads) / 4;
 }
 
+bool PhysicalOperator::OperatorCachingAllowed(ExecutionContext &context) {
+	if (!context.client.config.enable_caching_operators) {
+		return false;
+	} else if (!context.pipeline) {
+		return false;
+	} else if (!context.pipeline->GetSink()) {
+		return false;
+	} else if (context.pipeline->GetSink()->RequiresBatchIndex()) {
+		return false;
+	} else if (context.pipeline->IsOrderDependent()) {
+		return false;
+	}
+
+	return true;
+}
+
 //===--------------------------------------------------------------------===//
 // Pipeline Construction
 //===--------------------------------------------------------------------===//
-void PhysicalOperator::AddPipeline(Executor &executor, shared_ptr<Pipeline> pipeline, PipelineBuildState &state) {
-	if (!state.recursive_cte) {
-		// regular pipeline: schedule it
-		state.AddPipeline(executor, move(pipeline));
-	} else {
-		// CTE pipeline! add it to the CTE pipelines
-		auto &cte = (PhysicalRecursiveCTE &)*state.recursive_cte;
-		cte.pipelines.push_back(move(pipeline));
-	}
-}
-
-void PhysicalOperator::BuildChildPipeline(Executor &executor, Pipeline &current, PipelineBuildState &state,
-                                          PhysicalOperator *pipeline_child) {
-	auto pipeline = make_shared<Pipeline>(executor);
-	state.SetPipelineSink(*pipeline, this);
-	// the current is dependent on this pipeline to complete
-	current.AddDependency(pipeline);
-	// recurse into the pipeline child
-	pipeline_child->BuildPipelines(executor, *pipeline, state);
-	AddPipeline(executor, move(pipeline), state);
-}
-
-void PhysicalOperator::BuildPipelines(Executor &executor, Pipeline &current, PipelineBuildState &state) {
+void PhysicalOperator::BuildPipelines(Pipeline &current, MetaPipeline &meta_pipeline) {
 	op_state.reset();
+
+	auto &state = meta_pipeline.GetState();
 	if (IsSink()) {
 		// operator is a sink, build a pipeline
 		sink_state.reset();
-
-		// single operator:
-		// the operator becomes the data source of the current pipeline
-		state.SetPipelineSource(current, this);
-		// we create a new pipeline starting from the child
 		D_ASSERT(children.size() == 1);
 
-		BuildChildPipeline(executor, current, state, children[0].get());
+		// single operator: the operator becomes the data source of the current pipeline
+		state.SetPipelineSource(current, *this);
+
+		// we create a new pipeline starting from the child
+		auto &child_meta_pipeline = meta_pipeline.CreateChildMetaPipeline(current, *this);
+		child_meta_pipeline.Build(*children[0]);
 	} else {
 		// operator is not a sink! recurse in children
 		if (children.empty()) {
 			// source
-			state.SetPipelineSource(current, this);
+			state.SetPipelineSource(current, *this);
 		} else {
 			if (children.size() != 1) {
 				throw InternalException("Operator not supported in BuildPipelines");
 			}
-			state.AddPipelineOperator(current, this);
-			children[0]->BuildPipelines(executor, current, state);
+			state.AddPipelineOperator(current, *this);
+			children[0]->BuildPipelines(current, meta_pipeline);
 		}
 	}
 }
 
-vector<const PhysicalOperator *> PhysicalOperator::GetSources() const {
-	vector<const PhysicalOperator *> result;
+vector<const_reference<PhysicalOperator>> PhysicalOperator::GetSources() const {
+	vector<const_reference<PhysicalOperator>> result;
 	if (IsSink()) {
 		D_ASSERT(children.size() == 1);
-		result.push_back(this);
+		result.push_back(*this);
 		return result;
 	} else {
 		if (children.empty()) {
 			// source
-			result.push_back(this);
+			result.push_back(*this);
 			return result;
 		} else {
 			if (children.size() != 1) {
@@ -196,19 +197,7 @@ vector<const PhysicalOperator *> PhysicalOperator::GetSources() const {
 bool PhysicalOperator::AllSourcesSupportBatchIndex() const {
 	auto sources = GetSources();
 	for (auto &source : sources) {
-		if (!source->SupportsBatchIndex()) {
-			return false;
-		}
-	}
-	return true;
-}
-
-bool PhysicalOperator::AllOperatorsPreserveOrder() const {
-	if (!IsOrderPreserving()) {
-		return false;
-	}
-	for (auto &child : children) {
-		if (!child->IsOrderPreserving()) {
+		if (!source.get().SupportsBatchIndex()) {
 			return false;
 		}
 	}
@@ -246,7 +235,7 @@ bool CachingPhysicalOperator::CanCacheType(const LogicalType &type) {
 
 CachingPhysicalOperator::CachingPhysicalOperator(PhysicalOperatorType type, vector<LogicalType> types_p,
                                                  idx_t estimated_cardinality)
-    : PhysicalOperator(type, move(types_p), estimated_cardinality) {
+    : PhysicalOperator(type, std::move(types_p), estimated_cardinality) {
 
 	caching_supported = true;
 	for (auto &col_type : types) {
@@ -259,7 +248,7 @@ CachingPhysicalOperator::CachingPhysicalOperator(PhysicalOperatorType type, vect
 
 OperatorResultType CachingPhysicalOperator::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
                                                     GlobalOperatorState &gstate, OperatorState &state_p) const {
-	auto &state = (CachingOperatorState &)state_p;
+	auto &state = state_p.Cast<CachingOperatorState>();
 
 	// Execute child operator
 	auto child_result = ExecuteInternal(context, input, chunk, gstate, state);
@@ -267,28 +256,18 @@ OperatorResultType CachingPhysicalOperator::Execute(ExecutionContext &context, D
 #if STANDARD_VECTOR_SIZE >= 128
 	if (!state.initialized) {
 		state.initialized = true;
-		state.can_cache_chunk = true;
-		if (!context.pipeline || !caching_supported) {
-			state.can_cache_chunk = false;
-		}
-
-		if (context.pipeline->GetSink() && context.pipeline->GetSink()->RequiresBatchIndex()) {
-			state.can_cache_chunk = false;
-		}
-
-		if (context.pipeline->IsOrderDependent()) {
-			state.can_cache_chunk = false;
-		}
+		state.can_cache_chunk = caching_supported && PhysicalOperator::OperatorCachingAllowed(context);
 	}
 	if (!state.can_cache_chunk) {
 		return child_result;
 	}
+	// TODO chunk size of 0 should not result in a cache being created!
 	if (chunk.size() < CACHE_THRESHOLD) {
 		// we have filtered out a significant amount of tuples
 		// add this chunk to the cache and continue
 
 		if (!state.cached_chunk) {
-			state.cached_chunk = make_unique<DataChunk>();
+			state.cached_chunk = make_uniq<DataChunk>();
 			state.cached_chunk->Initialize(Allocator::Get(context.client), chunk.GetTypes());
 		}
 
@@ -313,7 +292,7 @@ OperatorResultType CachingPhysicalOperator::Execute(ExecutionContext &context, D
 OperatorFinalizeResultType CachingPhysicalOperator::FinalExecute(ExecutionContext &context, DataChunk &chunk,
                                                                  GlobalOperatorState &gstate,
                                                                  OperatorState &state_p) const {
-	auto &state = (CachingOperatorState &)state_p;
+	auto &state = state_p.Cast<CachingOperatorState>();
 	if (state.cached_chunk) {
 		chunk.Move(*state.cached_chunk);
 		state.cached_chunk.reset();

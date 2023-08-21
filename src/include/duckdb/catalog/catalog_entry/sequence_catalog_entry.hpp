@@ -30,8 +30,12 @@ struct SequenceValue {
 //! A sequence catalog entry
 class SequenceCatalogEntry : public StandardEntry {
 public:
+	static constexpr const CatalogType Type = CatalogType::SEQUENCE_ENTRY;
+	static constexpr const char *Name = "sequence";
+
+public:
 	//! Create a real TableCatalogEntry and initialize storage for it
-	SequenceCatalogEntry(Catalog *catalog, SchemaCatalogEntry *schema, CreateSequenceInfo *info);
+	SequenceCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateSequenceInfo &info);
 
 	//! Lock for getting a value on the sequence
 	mutex lock;
@@ -53,13 +57,8 @@ public:
 	bool cycle;
 
 public:
-	//! Serialize the meta information of the SequenceCatalogEntry a serializer
-	virtual void Serialize(Serializer &serializer);
-	//! Deserializes to a CreateTableInfo
-	static unique_ptr<CreateSequenceInfo> Deserialize(Deserializer &source);
+	unique_ptr<CreateInfo> GetInfo() const override;
 
-	string ToSQL() override;
-
-	CatalogEntry *AlterOwnership(ClientContext &context, AlterInfo *info);
+	string ToSQL() const override;
 };
 } // namespace duckdb

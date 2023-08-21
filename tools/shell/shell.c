@@ -86,6 +86,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
+#include "duckdb_shell_wrapper.h"
 #include "sqlite3.h"
 typedef sqlite3_int64 i64;
 typedef sqlite3_uint64 u64;
@@ -745,7 +746,6 @@ static char *one_input_line(FILE *in, char *zPrior, int isContinuation){
 #else
     free(zPrior);
     zResult = shell_readline(zPrompt);
-    if( zResult && *zResult && *zResult != '\3' ) shell_add_history(zResult);
 #endif
   }
   return zResult;
@@ -949,6 +949,9 @@ static void shellModuleSchema(
   sqlite3_value **apVal
 ){
   const char *zName = (const char*)sqlite3_value_text(apVal[0]);
+  if (!zName) {
+    zName = "module_schema";
+  }
   char *zFake = shellFakeSchema(sqlite3_context_db_handle(pCtx), 0, zName);
   UNUSED_PARAMETER(nVal);
   if( zFake ){
@@ -10719,6 +10722,7 @@ struct ShellState {
   int nWidth;            /* Number of slots in colWidth[] and actualWidth[] */
   char nullValue[20];    /* The text to print when a NULL comes back from
                          ** the database */
+  int columns;           /* Column-wise DuckBox rendering */
   char outfile[FILENAME_MAX]; /* Filename for *out */
   const char *zDbFilename;    /* name of the database file */
   char *zFreeOnClose;         /* Filename to free when closing */
@@ -10729,7 +10733,8 @@ struct ShellState {
   int nIndent;           /* Size of array aiIndent[] */
   int iIndent;           /* Index of current op in aiIndent[] */
   EQPGraph sGraph;       /* Information for the graphical EXPLAIN QUERY PLAN */
-  size_t max_rows;       /* The maximum number of rows to render */
+  size_t max_rows;       /* The maximum number of rows to render in DuckBox mode */
+  size_t max_width;      /* The maximum number of characters to render horizontally in DuckBox mode */
 #if defined(SQLITE_ENABLE_SESSION)
   int nSession;             /* Number of active sessions */
   OpenSession aSession[4];  /* Array of sessions.  [0] is in focus. */
@@ -12880,7 +12885,7 @@ columnar_end:
   sqlite3_free(azData);
 }
 
-extern char *sqlite3_print_duckbox(sqlite3_stmt *pStmt, size_t max_rows, char *null_value);
+extern char *sqlite3_print_duckbox(sqlite3_stmt *pStmt, size_t max_rows, size_t max_width, char *null_value, int columns);
 
 /*
 ** Run a prepared statement
@@ -12891,7 +12896,9 @@ static void exec_prepared_stmt(
 ){
   int rc;
   if (pArg->cMode == MODE_DuckBox) {
-	  char *str = sqlite3_print_duckbox(pStmt, pArg->max_rows, pArg->nullValue);
+	  size_t max_rows = pArg->outfile[0] == '\0' || pArg->outfile[0] == '|' ? pArg->max_rows : (size_t) -1;
+	  size_t max_width = pArg->outfile[0] == '\0' || pArg->outfile[0] == '|' ? pArg->max_width : (size_t) -1;
+	  char *str = sqlite3_print_duckbox(pStmt, max_rows, max_width, pArg->nullValue, pArg->columns);
 	  if (str) {
 		  utf8_printf(pArg->out, "%s", str);
 		  sqlite3_free(str);
@@ -13575,21 +13582,19 @@ static const char *(azHelp[]) = {
   "   See also:",
   "      http://sqlite.org/cli.html#sqlar_archive_support",
 #endif
-#ifndef SQLITE_OMIT_AUTHORIZATION
-  ".auth ON|OFF             Show authorizer callbacks",
-#endif
-  ".backup ?DB? FILE        Backup DB (default \"main\") to FILE",
-  "       --append            Use the appendvfs",
-  "       --async             Write to FILE without journal and fsync()",
   ".bail on|off             Stop after hitting an error.  Default OFF",
   ".binary on|off           Turn binary output on or off.  Default OFF",
   ".cd DIRECTORY            Change the working directory to DIRECTORY",
   ".changes on|off          Show number of rows changed by SQL",
   ".check GLOB              Fail if output since .testcase does not match",
   ".clone NEWDB             Clone data into NEWDB from the existing database",
+  ".columns                 Column-wise rendering of query results",
+  ".constant ?COLOR?        Sets the syntax highlighting color used for constant values",
+  "   COLOR is one of:",
+  "     red|green|yellow|blue|magenta|cyan|white|brightblack|brightred|brightgreen",
+  "     brightyellow|brightblue|brightmagenta|brightcyan|brightwhite",
+  ".constantcode ?CODE?     Sets the syntax highlighting terminal code used for constant values",
   ".databases               List names and files of attached databases",
-  ".dbconfig ?op? ?val?     List or change sqlite3_db_config() options",
-  ".dbinfo ?DB?             Show status information about the database",
   ".dump ?TABLE?            Render database content as SQL",
   "   Options:",
   "     --preserve-rowids      Include ROWID values in the output",
@@ -13597,7 +13602,6 @@ static const char *(azHelp[]) = {
   "   TABLE is a LIKE pattern for the tables to dump",
   "   Additional LIKE patterns can be given in subsequent arguments",
   ".echo on|off             Turn command echo on or off",
-  ".eqp on|off|full|...     Enable or disable automatic EXPLAIN QUERY PLAN",
   "   Other Modes:",
 #ifdef SQLITE_DEBUG
   "      test                  Show raw EXPLAIN QUERY PLAN output",
@@ -13607,14 +13611,11 @@ static const char *(azHelp[]) = {
   ".excel                   Display the output of next command in spreadsheet",
   "   --bom                   Put a UTF8 byte-order mark on intermediate file",
   ".exit ?CODE?             Exit this program with return-code CODE",
-  ".expert                  EXPERIMENTAL. Suggest indexes for queries",
   ".explain ?on|off|auto?   Change the EXPLAIN formatting mode.  Default: auto",
-  ".filectrl CMD ...        Run various sqlite3_file_control() operations",
-  "   --schema SCHEMA         Use SCHEMA instead of \"main\"",
-  "   --help                  Show CMD details",
   ".fullschema ?--indent?   Show schema and the content of sqlite_stat tables",
   ".headers on|off          Turn display of headers on or off",
   ".help ?-all? ?PATTERN?   Show help text for PATTERN",
+  ".highlight [on|off]      Toggle syntax highlighting in the shell on/off",
   ".import FILE TABLE       Import data from FILE into TABLE",
   "   Options:",
   "     --ascii               Use \\037 and \\036 as column and row separators",
@@ -13628,16 +13629,17 @@ static const char *(azHelp[]) = {
   "        from the \".mode\" output mode",
   "     *  If FILE begins with \"|\" then it is a command that generates the",
   "        input text.",
-#ifndef SQLITE_OMIT_TEST_CONTROL
-  ".imposter INDEX TABLE    Create imposter table TABLE on index INDEX",
-#endif
   ".indexes ?TABLE?         Show names of indexes",
   "                           If TABLE is specified, only show indexes for",
   "                           tables matching TABLE using the LIKE operator.",
 #ifdef SQLITE_ENABLE_IOTRACE
   ".iotrace FILE            Enable I/O diagnostic logging to FILE",
 #endif
-  ".limit ?LIMIT? ?VAL?     Display or change the value of an SQLITE_LIMIT",
+  ".keyword ?COLOR?         Sets the syntax highlighting color used for keywords",
+  "   COLOR is one of:",
+  "     red|green|yellow|blue|magenta|cyan|white|brightblack|brightred|brightgreen",
+  "     brightyellow|brightblue|brightmagenta|brightcyan|brightwhite",
+  ".keywordcode ?CODE?      Sets the syntax highlighting terminal code used for keywords",
   ".lint OPTIONS            Report potential schema issues.",
   "     Options:",
   "        fkey-indexes     Find missing foreign key indexes",
@@ -13646,15 +13648,19 @@ static const char *(azHelp[]) = {
 #endif
   ".log FILE|off            Turn logging on or off.  FILE can be stderr/stdout",
   ".maxrows COUNT           Sets the maximum number of rows for display. Only for duckbox mode.",
+  ".maxwidth COUNT          Sets the maximum width in characters. 0 defaults to terminal width. Only for duckbox mode.",
   ".mode MODE ?TABLE?       Set output mode",
   "   MODE is one of:",
   "     ascii     Columns/rows delimited by 0x1F and 0x1E",
   "     box       Tables using unicode box-drawing characters",
   "     csv       Comma-separated values",
   "     column    Output in columns.  (See .width)",
+  "     duckbox   Tables with extensive features",
   "     html      HTML <table> code",
   "     insert    SQL insert statements for TABLE",
   "     json      Results in a JSON array",
+  "     jsonlines Results in a NDJSON",
+  "     latex     LaTeX tabular environment code",
   "     line      One value per line",
   "     list      Values delimited by \"|\"",
   "     markdown  Markdown table format",
@@ -13662,6 +13668,7 @@ static const char *(azHelp[]) = {
   "     table     ASCII-art table",
   "     tabs      Tab-separated values",
   "     tcl       TCL list elements",
+  "     trash     No output",
   ".nullvalue STRING        Use STRING in place of NULL values",
   ".once ?OPTIONS? ?FILE?   Output for the next SQL command only to FILE",
   "     If FILE begins with '|' then open as a pipe",
@@ -13697,13 +13704,6 @@ static const char *(azHelp[]) = {
   "                           PARAMETER should start with one of: $ : @ ?",
   "   unset PARAMETER         Remove PARAMETER from the binding table",
   ".print STRING...         Print literal STRING",
-#ifndef SQLITE_OMIT_PROGRESS_CALLBACK
-  ".progress N              Invoke progress handler after every N opcodes",
-  "   --limit N                 Interrupt after N progress callbacks",
-  "   --once                    Do no more than one progress interrupt",
-  "   --quiet|-q                No output except at interrupts",
-  "   --reset                   Reset the count for each input and interrupt",
-#endif
   ".prompt MAIN CONTINUE    Replace the standard prompts",
   ".quit                    Exit this program",
   ".read FILE               Read input from FILE",
@@ -13715,16 +13715,10 @@ static const char *(azHelp[]) = {
   "   --no-rowids              Do not attempt to recover rowid values",
   "                            that are not also INTEGER PRIMARY KEYs",
 #endif
-  ".restore ?DB? FILE       Restore content of DB (default \"main\") from FILE",
-  ".save FILE               Write in-memory database into FILE",
-  ".scanstats on|off        Turn sqlite3_stmt_scanstatus() metrics on or off",
+  ".rows                    Row-wise rendering of query results (default)",
   ".schema ?PATTERN?        Show the CREATE statements matching PATTERN",
   "     Options:",
   "         --indent            Try to pretty-print the schema",
-  ".selftest ?OPTIONS?      Run tests defined in the SELFTEST table",
-  "    Options:",
-  "       --init               Create a new SELFTEST table",
-  "       -v                   Verbose output",
   ".separator COL ?ROW?     Change the column and row separators",
 #if defined(SQLITE_ENABLE_SESSION)
   ".session ?NAME? CMD ...  Create or control sessions",
@@ -13753,39 +13747,16 @@ static const char *(azHelp[]) = {
   ".shell CMD ARGS...       Run CMD ARGS... in a system shell",
 #endif
   ".show                    Show the current values for various settings",
-  ".stats ?on|off?          Show stats or turn stats on or off",
 #ifndef SQLITE_NOHAVE_SYSTEM
   ".system CMD ARGS...      Run CMD ARGS... in a system shell",
 #endif
   ".tables ?TABLE?          List names of tables matching LIKE pattern TABLE",
   ".testcase NAME           Begin redirecting output to 'testcase-out.txt'",
-  ".testctrl CMD ...        Run various sqlite3_test_control() operations",
-  "                           Run \".testctrl\" with no arguments for details",
-  ".timeout MS              Try opening locked tables for MS milliseconds",
   ".timer on|off            Turn SQL timer on or off",
-#ifndef SQLITE_OMIT_TRACE
-  ".trace ?OPTIONS?         Output each SQL statement as it is run",
-  "    FILE                    Send output to FILE",
-  "    stdout                  Send output to stdout",
-  "    stderr                  Send output to stderr",
-  "    off                     Disable tracing",
-  "    --expanded              Expand query parameters",
-#ifdef SQLITE_ENABLE_NORMALIZE
-  "    --normalized            Normal the SQL statements",
-#endif
-  "    --plain                 Show SQL as it is input",
-  "    --stmt                  Trace statement execution (SQLITE_TRACE_STMT)",
-  "    --profile               Profile statements (SQLITE_TRACE_PROFILE)",
-  "    --row                   Trace each row (SQLITE_TRACE_ROW)",
-  "    --close                 Trace connection close (SQLITE_TRACE_CLOSE)",
-#endif /* SQLITE_OMIT_TRACE */
 #ifdef SQLITE_DEBUG
   ".unmodule NAME ...       Unregister virtual table modules",
   "    --allexcept             Unregister everything except those named",
 #endif
-  ".vfsinfo ?AUX?           Information about the top-level VFS",
-  ".vfslist                 List all available VFSes",
-  ".vfsname ?AUX?           Print the name of the VFS stack",
   ".width NUM1 NUM2 ...     Set minimum column widths for columnar output",
   "     Negative values right-justify",
 };
@@ -14149,7 +14120,7 @@ static void shellEscapeCrnl(
 ){
   const char *zText = (const char*)sqlite3_value_text(argv[0]);
   UNUSED_PARAMETER(argc);
-  if( zText[0]=='\'' ){
+  if( zText && zText[0]=='\'' ){
     int nText = sqlite3_value_bytes(argv[0]);
     int i;
     char zBuf1[20];
@@ -14626,8 +14597,6 @@ static int sql_trace_callback(
 ** a useful spot to set a debugger breakpoint.
 */
 static void test_breakpoint(void){
-  static int nCall = 0;
-  nCall++;
 }
 
 /*
@@ -15049,127 +15018,6 @@ static void output_reset(ShellState *p){
   }
   p->outfile[0] = 0;
   p->out = stdout;
-}
-
-/*
-** Run an SQL command and return the single integer result.
-*/
-static int db_int(ShellState *p, const char *zSql){
-  sqlite3_stmt *pStmt;
-  int res = 0;
-  sqlite3_prepare_v2(p->db, zSql, -1, &pStmt, 0);
-  if( pStmt && sqlite3_step(pStmt)==SQLITE_ROW ){
-    res = sqlite3_column_int(pStmt,0);
-  }
-  sqlite3_finalize(pStmt);
-  return res;
-}
-
-/*
-** Convert a 2-byte or 4-byte big-endian integer into a native integer
-*/
-static unsigned int get2byteInt(unsigned char *a){
-  return (a[0]<<8) + a[1];
-}
-static unsigned int get4byteInt(unsigned char *a){
-  return (a[0]<<24) + (a[1]<<16) + (a[2]<<8) + a[3];
-}
-
-/*
-** Implementation of the ".dbinfo" command.
-**
-** Return 1 on error, 2 to exit, and 0 otherwise.
-*/
-static int shell_dbinfo_command(ShellState *p, int nArg, char **azArg){
-  static const struct { const char *zName; int ofst; } aField[] = {
-     { "file change counter:",  24  },
-     { "database page count:",  28  },
-     { "freelist page count:",  36  },
-     { "schema cookie:",        40  },
-     { "schema format:",        44  },
-     { "default cache size:",   48  },
-     { "autovacuum top root:",  52  },
-     { "incremental vacuum:",   64  },
-     { "text encoding:",        56  },
-     { "user version:",         60  },
-     { "application id:",       68  },
-     { "software version:",     96  },
-  };
-  static const struct { const char *zName; const char *zSql; } aQuery[] = {
-     { "number of tables:",
-       "SELECT count(*) FROM %s WHERE type='table'" },
-     { "number of indexes:",
-       "SELECT count(*) FROM %s WHERE type='index'" },
-     { "number of triggers:",
-       "SELECT count(*) FROM %s WHERE type='trigger'" },
-     { "number of views:",
-       "SELECT count(*) FROM %s WHERE type='view'" },
-     { "schema size:",
-       "SELECT total(length(sql)) FROM %s" },
-  };
-  int i, rc;
-  unsigned iDataVersion;
-  char *zSchemaTab;
-  char *zDb = nArg>=2 ? azArg[1] : "main";
-  sqlite3_stmt *pStmt = 0;
-  unsigned char aHdr[100];
-  open_db(p, 0);
-  if( p->db==0 ) return 1;
-  rc = sqlite3_prepare_v2(p->db,
-             "SELECT data FROM sqlite_dbpage(?1) WHERE pgno=1",
-             -1, &pStmt, 0);
-  if( rc ){
-    utf8_printf(stderr, "error: %s\n", sqlite3_errmsg(p->db));
-    sqlite3_finalize(pStmt);
-    return 1;
-  }
-  sqlite3_bind_text(pStmt, 1, zDb, -1, SQLITE_STATIC);
-  if( sqlite3_step(pStmt)==SQLITE_ROW
-   && sqlite3_column_bytes(pStmt,0)>100
-  ){
-    memcpy(aHdr, sqlite3_column_blob(pStmt,0), 100);
-    sqlite3_finalize(pStmt);
-  }else{
-    raw_printf(stderr, "unable to read database header\n");
-    sqlite3_finalize(pStmt);
-    return 1;
-  }
-  i = get2byteInt(aHdr+16);
-  if( i==1 ) i = 65536;
-  utf8_printf(p->out, "%-20s %d\n", "database page size:", i);
-  utf8_printf(p->out, "%-20s %d\n", "write format:", aHdr[18]);
-  utf8_printf(p->out, "%-20s %d\n", "read format:", aHdr[19]);
-  utf8_printf(p->out, "%-20s %d\n", "reserved bytes:", aHdr[20]);
-  for(i=0; i<ArraySize(aField); i++){
-    int ofst = aField[i].ofst;
-    unsigned int val = get4byteInt(aHdr + ofst);
-    utf8_printf(p->out, "%-20s %u", aField[i].zName, val);
-    switch( ofst ){
-      case 56: {
-        if( val==1 ) raw_printf(p->out, " (utf8)");
-        if( val==2 ) raw_printf(p->out, " (utf16le)");
-        if( val==3 ) raw_printf(p->out, " (utf16be)");
-      }
-    }
-    raw_printf(p->out, "\n");
-  }
-  if( zDb==0 ){
-    zSchemaTab = sqlite3_mprintf("main.sqlite_schema");
-  }else if( strcmp(zDb,"temp")==0 ){
-    zSchemaTab = sqlite3_mprintf("%s", "sqlite_temp_schema");
-  }else{
-    zSchemaTab = sqlite3_mprintf("\"%w\".sqlite_schema", zDb);
-  }
-  for(i=0; i<ArraySize(aQuery); i++){
-    char *zSql = sqlite3_mprintf(aQuery[i].zSql, zSchemaTab);
-    int val = db_int(p, zSql);
-    sqlite3_free(zSql);
-    utf8_printf(p->out, "%-20s %d\n", aQuery[i].zName, val);
-  }
-  sqlite3_free(zSchemaTab);
-  sqlite3_file_control(p->db, zDb, SQLITE_FCNTL_DATA_VERSION, &iDataVersion);
-  utf8_printf(p->out, "%-20s %u\n", "data version", iDataVersion);
-  return 0;
 }
 
 /*
@@ -17354,10 +17202,6 @@ static int do_meta_command(char *zLine, ShellState *p){
     }
   }else
 
-  if( c=='d' && n>=3 && strncmp(azArg[0], "dbinfo", n)==0 ){
-    rc = shell_dbinfo_command(p, nArg, azArg);
-  }else
-
 #if !defined(SQLITE_OMIT_VIRTUALTABLE) && defined(SQLITE_ENABLE_DBPAGE_VTAB)
   if( c=='r' && strncmp(azArg[0], "recover", n)==0 ){
     open_db(p, 0);
@@ -18246,6 +18090,21 @@ static int do_meta_command(char *zLine, ShellState *p){
 	  p->max_rows = (size_t)integerValue(azArg[1]);
 	}
   }else
+  if( c=='m' && strncmp(azArg[0], "maxwidth", n)==0 ){
+	if( nArg==1 ){
+      raw_printf(p->out, "current max maxwidth: %zu\n", p->max_width);
+	}else
+    if( nArg!=2 ){
+		raw_printf(stderr, "Usage: .maxwidth COUNT\n");
+		rc = 1;
+	}else{
+	  p->max_width = (size_t)integerValue(azArg[1]);
+	}
+  }else if( c=='c' && strncmp(azArg[0],"columns",n)==0 ){
+    p->columns = 1;
+  }else if( c=='r' && strncmp(azArg[0],"rows",n)==0 ){
+    p->columns = 0;
+  }else
   if( c=='m' && strncmp(azArg[0], "mode", n)==0 ){
     const char *zMode = nArg>=2 ? azArg[1] : "";
     int n2 = strlen30(zMode);
@@ -18307,8 +18166,8 @@ static int do_meta_command(char *zLine, ShellState *p){
       raw_printf(p->out, "current output mode: %s\n", modeDescr[p->mode]);
     }else{
       raw_printf(stderr, "Error: mode should be one of: "
-         "ascii duckbox box column csv html insert json line list markdown "
-         "quote table tabs tcl latex trash \n");
+         "ascii box column csv duckbox html insert json jsonlines latex line "
+         "list markdown quote table tabs tcl trash \n");
       rc = 1;
     }
     p->cMode = p->mode;
@@ -19402,11 +19261,11 @@ static int do_meta_command(char *zLine, ShellState *p){
     ShellText s;
     initText(&s);
     open_db(p, 0);
-    rc = sqlite3_prepare_v2(p->db, "PRAGMA database_list", -1, &pStmt, 0);
-    if( rc ){
-      sqlite3_finalize(pStmt);
-      return shellDatabaseError(p->db);
-    }
+//    rc = sqlite3_prepare_v2(p->db, "PRAGMA database_list", -1, &pStmt, 0);
+//    if( rc ){
+//      sqlite3_finalize(pStmt);
+//      return shellDatabaseError(p->db);
+//    }
 
     if( nArg>2 && c=='i' ){
       /* It is an historical accident that the .indexes command shows an error
@@ -19414,22 +19273,16 @@ static int do_meta_command(char *zLine, ShellState *p){
       ** command does not. */
       raw_printf(stderr, "Usage: .indexes ?LIKE-PATTERN?\n");
       rc = 1;
-      sqlite3_finalize(pStmt);
+//      sqlite3_finalize(pStmt);
       goto meta_command_exit;
     }
-    for(ii=0; sqlite3_step(pStmt)==SQLITE_ROW; ii++){
-      const char *zDbName = (const char*)sqlite3_column_text(pStmt, 1);
-      if( zDbName==0 ) continue;
-      if( s.z && s.z[0] ) appendText(&s, " UNION ALL ", 0);
-      if( sqlite3_stricmp(zDbName, "main")==0 ){
+//    for(ii=0; sqlite3_step(pStmt)==SQLITE_ROW; ii++){
+//      const char *zDbName = (const char*)sqlite3_column_text(pStmt, 1);
+//      if( zDbName==0 ) continue;
+//      if( s.z && s.z[0] ) appendText(&s, " UNION ALL ", 0);
         appendText(&s, "SELECT name FROM ", 0);
-      }else{
-        appendText(&s, "SELECT ", 0);
-        appendText(&s, zDbName, '\'');
-        appendText(&s, "||'.'||name FROM ", 0);
-      }
-      appendText(&s, zDbName, '"');
-      appendText(&s, ".sqlite_schema ", 0);
+//      appendText(&s, zDbName, '"');
+      appendText(&s, "sqlite_schema ", 0);
       if( c=='t' ){
         appendText(&s," WHERE type IN ('table','view')"
                       "   AND name NOT LIKE 'sqlite_%'"
@@ -19438,8 +19291,8 @@ static int do_meta_command(char *zLine, ShellState *p){
         appendText(&s," WHERE type='index'"
                       "   AND tbl_name LIKE ?1", 0);
       }
-    }
-    rc = sqlite3_finalize(pStmt);
+//    }
+//    rc = sqlite3_finalize(pStmt);
     appendText(&s, " ORDER BY 1", 0);
     rc = sqlite3_prepare_v2(p->db, s.z, -1, &pStmt, 0);
     freeText(&s);
@@ -20039,6 +19892,9 @@ static int runOneSqlLine(ShellState *p, char *zSql, FILE *in, int startline){
   open_db(p, 0);
   if( ShellHasFlag(p,SHFLG_Backslash) ) resolve_backslashes(zSql);
   if( p->flgProgress & SHELL_PROGRESS_RESET ) p->nProgress = 0;
+#ifndef SHELL_USE_LOCAL_GETLINE
+  if( zSql && *zSql && *zSql != '\3' ) shell_add_history(zSql);
+#endif
   BEGIN_TIMER;
   rc = shell_exec(p, zSql, &zErrMsg);
   END_TIMER;
@@ -20122,6 +19978,9 @@ static int process_input(ShellState *p){
     if( zLine && (zLine[0]=='.' || zLine[0]=='#') && nSql==0 ){
       if( ShellHasFlag(p, SHFLG_Echo) ) printf("%s\n", zLine);
       if( zLine[0]=='.' ){
+#ifndef SHELL_USE_LOCAL_GETLINE
+        if( zLine && *zLine && *zLine != '\3' ) shell_add_history(zLine);
+#endif
         rc = do_meta_command(zLine, p);
         if( rc==2 ){ /* exit requested */
           break;
@@ -20315,13 +20174,10 @@ static const char zOptions[] =
   "   -json                set output mode to 'json'\n"
   "   -line                set output mode to 'line'\n"
   "   -list                set output mode to 'list'\n"
-  "   -lookaside SIZE N    use N entries of SZ bytes for lookaside memory\n"
   "   -markdown            set output mode to 'markdown'\n"
 #if defined(SQLITE_ENABLE_DESERIALIZE)
   "   -maxsize N           maximum size for a --deserialize database\n"
 #endif
-  "   -memtrace            trace all memory allocations and deallocations\n"
-  "   -mmap N              default mmap size set to N\n"
 #ifdef SQLITE_ENABLE_MULTIPLEX
   "   -multiplex           enable the multiplexor VFS\n"
 #endif
@@ -20329,7 +20185,6 @@ static const char zOptions[] =
   "   -nofollow            refuse to open symbolic links to database files\n"
   "   -no-stdin            exit after processing options instead of reading stdin\n"
   "   -nullvalue TEXT      set text string for NULL values. Default ''\n"
-  "   -pagecache SIZE N    use N slots of SZ bytes each for page cache memory\n"
   "   -quote               set output mode to 'quote'\n"
   "   -readonly            open the database read-only\n"
   "   -s COMMAND           run \"COMMAND\" and exit\n"
@@ -20341,10 +20196,6 @@ static const char zOptions[] =
   "   -table               set output mode to 'table'\n"
   "   -unsigned            allow loading of unsigned extensions\n"
   "   -version             show DuckDB version\n"
-  "   -vfs NAME            use NAME as the default VFS\n"
-#ifdef SQLITE_ENABLE_VFSTRACE
-  "   -vfstrace            enable tracing of all VFS calls\n"
-#endif
 #ifdef SQLITE_HAVE_ZLIB
   "   -zip                 open the file as a ZIP Archive\n"
 #endif
@@ -20379,7 +20230,7 @@ static void verify_uninitialized(void){
 static void main_init(ShellState *data) {
   memset(data, 0, sizeof(*data));
   data->normalMode = data->cMode = data->mode = MODE_DuckBox;
-  data->max_rows = 20;
+  data->max_rows = 40;
   data->autoExplain = 1;
   memcpy(data->colSeparator,SEP_Column, 2);
   memcpy(data->rowSeparator,SEP_Row, 2);

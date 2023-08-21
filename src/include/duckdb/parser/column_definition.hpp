@@ -29,9 +29,6 @@ public:
 	DUCKDB_API ColumnDefinition(string name, LogicalType type, unique_ptr<ParsedExpression> expression,
 	                            TableColumnType category);
 
-	//! The default value of the column (if any)
-	unique_ptr<ParsedExpression> default_value;
-
 public:
 	//! default_value
 	const unique_ptr<ParsedExpression> &DefaultValue() const;
@@ -54,6 +51,9 @@ public:
 	const storage_t &StorageOid() const;
 	void SetStorageOid(storage_t storage_oid);
 
+	LogicalIndex Logical() const;
+	PhysicalIndex Physical() const;
+
 	//! oid
 	const column_t &Oid() const;
 	void SetOid(column_t oid);
@@ -67,6 +67,9 @@ public:
 	DUCKDB_API void Serialize(Serializer &serializer) const;
 	DUCKDB_API static ColumnDefinition Deserialize(Deserializer &source);
 
+	DUCKDB_API void FormatSerialize(FormatSerializer &serializer) const;
+	DUCKDB_API static ColumnDefinition FormatDeserialize(FormatDeserializer &deserializer);
+
 	//===--------------------------------------------------------------------===//
 	// Generated Columns (VIRTUAL)
 	//===--------------------------------------------------------------------===//
@@ -77,9 +80,9 @@ public:
 	void ChangeGeneratedExpressionType(const LogicalType &type);
 	void GetListOfDependencies(vector<string> &dependencies) const;
 
-	string GetName();
+	string GetName() const;
 
-	LogicalType GetType();
+	LogicalType GetType() const;
 
 private:
 	//! The name of the entry
@@ -89,13 +92,14 @@ private:
 	//! Compression Type used for this column
 	duckdb::CompressionType compression_type = duckdb::CompressionType::COMPRESSION_AUTO;
 	//! The index of the column in the storage of the table
-	storage_t storage_oid;
+	storage_t storage_oid = DConstants::INVALID_INDEX;
 	//! The index of the column in the table
-	idx_t oid;
+	idx_t oid = DConstants::INVALID_INDEX;
 	//! The category of the column
 	TableColumnType category = TableColumnType::STANDARD;
-	//! Used by Generated Columns
-	unique_ptr<ParsedExpression> generated_expression;
+	//! The default value of the column (for non-generated columns)
+	//! The generated column expression (for generated columns)
+	unique_ptr<ParsedExpression> expression;
 };
 
 } // namespace duckdb

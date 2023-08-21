@@ -9,14 +9,11 @@
 #pragma once
 
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/function/built_in_functions.hpp"
 
 namespace duckdb {
 
 struct PragmaCollations {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct PragmaFunctionPragma {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -40,7 +37,7 @@ struct PragmaVersion {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
-struct PragmaDatabaseList {
+struct PragmaPlatform {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -57,6 +54,10 @@ struct DuckDBColumnsFun {
 };
 
 struct DuckDBConstraintsFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct DuckDBDatabasesFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -92,6 +93,10 @@ struct DuckDBTablesFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
+struct DuckDBTemporaryFilesFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
 struct DuckDBTypesFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
@@ -102,11 +107,11 @@ struct DuckDBViewsFun {
 
 struct TestType {
 	TestType(LogicalType type_p, string name_p)
-	    : type(move(type_p)), name(move(name_p)), min_value(Value::MinimumValue(type)),
+	    : type(std::move(type_p)), name(std::move(name_p)), min_value(Value::MinimumValue(type)),
 	      max_value(Value::MaximumValue(type)) {
 	}
 	TestType(LogicalType type_p, string name_p, Value min, Value max)
-	    : type(move(type_p)), name(move(name_p)), min_value(move(min)), max_value(move(max)) {
+	    : type(std::move(type_p)), name(std::move(name_p)), min_value(std::move(min)), max_value(std::move(max)) {
 	}
 
 	LogicalType type;
@@ -117,7 +122,7 @@ struct TestType {
 
 struct TestAllTypesFun {
 	static void RegisterFunction(BuiltinFunctions &set);
-	static vector<TestType> GetTestTypes();
+	static vector<TestType> GetTestTypes(bool large_enum = false);
 };
 
 struct TestVectorTypesFun {

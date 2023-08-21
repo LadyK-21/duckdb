@@ -8,13 +8,11 @@
 
 #pragma once
 
+#include "duckdb/common/allocator.hpp"
+#include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/winapi.hpp"
-#include "duckdb/common/allocator.hpp"
-#include "duckdb/common/arrow/arrow_wrapper.hpp"
-
-struct ArrowArray;
 
 namespace duckdb {
 class Allocator;
@@ -61,10 +59,13 @@ public:
 		this->count = count_p;
 	}
 	inline void SetCardinality(const DataChunk &other) {
-		this->count = other.size();
+		SetCardinality(other.size());
+	}
+	inline void SetCapacity(idx_t capacity_p) {
+		this->capacity = capacity_p;
 	}
 	inline void SetCapacity(const DataChunk &other) {
-		this->capacity = other.capacity;
+		SetCapacity(other.capacity);
 	}
 
 	DUCKDB_API Value GetValue(idx_t col_idx, idx_t index) const;
@@ -82,16 +83,18 @@ public:
 	//! This will create one vector of the specified type for each LogicalType in the
 	//! types list. The vector will be referencing vector to the data owned by
 	//! the DataChunk.
-	DUCKDB_API void Initialize(Allocator &allocator, const vector<LogicalType> &types);
-	DUCKDB_API void Initialize(ClientContext &context, const vector<LogicalType> &types);
+	DUCKDB_API void Initialize(Allocator &allocator, const vector<LogicalType> &types,
+	                           idx_t capacity = STANDARD_VECTOR_SIZE);
+	DUCKDB_API void Initialize(ClientContext &context, const vector<LogicalType> &types,
+	                           idx_t capacity = STANDARD_VECTOR_SIZE);
 	//! Initializes an empty DataChunk with the given types. The vectors will *not* have any data allocated for them.
 	DUCKDB_API void InitializeEmpty(const vector<LogicalType> &types);
 
 	DUCKDB_API void InitializeEmpty(vector<LogicalType>::const_iterator begin, vector<LogicalType>::const_iterator end);
 	DUCKDB_API void Initialize(Allocator &allocator, vector<LogicalType>::const_iterator begin,
-	                           vector<LogicalType>::const_iterator end);
+	                           vector<LogicalType>::const_iterator end, idx_t capacity = STANDARD_VECTOR_SIZE);
 	DUCKDB_API void Initialize(ClientContext &context, vector<LogicalType>::const_iterator begin,
-	                           vector<LogicalType>::const_iterator end);
+	                           vector<LogicalType>::const_iterator end, idx_t capacity = STANDARD_VECTOR_SIZE);
 
 	//! Append the other DataChunk to this one. The column count and types of
 	//! the two DataChunks have to match exactly. Throws an exception if there
@@ -119,7 +122,8 @@ public:
 	//! Turn all the vectors from the chunk into flat vectors
 	DUCKDB_API void Flatten();
 
-	DUCKDB_API unique_ptr<UnifiedVectorFormat[]> ToUnifiedFormat();
+	// FIXME: this is DUCKDB_API, might need conversion back to regular unique ptr?
+	DUCKDB_API unsafe_unique_array<UnifiedVectorFormat> ToUnifiedFormat();
 
 	DUCKDB_API void Slice(const SelectionVector &sel_vector, idx_t count);
 
@@ -139,13 +143,15 @@ public:
 
 	//! Hashes the DataChunk to the target vector
 	DUCKDB_API void Hash(Vector &result);
+	//! Hashes specific vectors of the DataChunk to the target vector
+	DUCKDB_API void Hash(vector<idx_t> &column_ids, Vector &result);
 
 	//! Returns a list of types of the vectors of this data chunk
 	DUCKDB_API vector<LogicalType> GetTypes();
 
 	//! Converts this DataChunk to a printable string representation
 	DUCKDB_API string ToString() const;
-	DUCKDB_API void Print();
+	DUCKDB_API void Print() const;
 
 	DataChunk(const DataChunk &) = delete;
 

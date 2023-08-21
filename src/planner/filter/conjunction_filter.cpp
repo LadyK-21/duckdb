@@ -35,7 +35,7 @@ bool ConjunctionOrFilter::Equals(const TableFilter &other_p) const {
 	if (!ConjunctionFilter::Equals(other_p)) {
 		return false;
 	}
-	auto &other = (ConjunctionOrFilter &)other_p;
+	auto &other = other_p.Cast<ConjunctionOrFilter>();
 	if (other.child_filters.size() != child_filters.size()) {
 		return false;
 	}
@@ -52,9 +52,9 @@ void ConjunctionOrFilter::Serialize(FieldWriter &writer) const {
 }
 
 unique_ptr<TableFilter> ConjunctionOrFilter::Deserialize(FieldReader &source) {
-	auto res = make_unique<ConjunctionOrFilter>();
+	auto res = make_uniq<ConjunctionOrFilter>();
 	res->child_filters = source.ReadRequiredSerializableList<TableFilter>();
-	return move(res);
+	return std::move(res);
 }
 
 ConjunctionAndFilter::ConjunctionAndFilter() : ConjunctionFilter(TableFilterType::CONJUNCTION_AND) {
@@ -90,7 +90,7 @@ bool ConjunctionAndFilter::Equals(const TableFilter &other_p) const {
 	if (!ConjunctionFilter::Equals(other_p)) {
 		return false;
 	}
-	auto &other = (ConjunctionAndFilter &)other_p;
+	auto &other = other_p.Cast<ConjunctionAndFilter>();
 	if (other.child_filters.size() != child_filters.size()) {
 		return false;
 	}
@@ -107,9 +107,9 @@ void ConjunctionAndFilter::Serialize(FieldWriter &writer) const {
 }
 
 unique_ptr<TableFilter> ConjunctionAndFilter::Deserialize(FieldReader &source) {
-	auto res = make_unique<ConjunctionAndFilter>();
+	auto res = make_uniq<ConjunctionAndFilter>();
 	res->child_filters = source.ReadRequiredSerializableList<TableFilter>();
-	return move(res);
+	return std::move(res);
 }
 
 } // namespace duckdb

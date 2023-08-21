@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/vector.hpp"
@@ -43,16 +44,16 @@ public:
 	void Write(T element) {
 		static_assert(std::is_trivially_destructible<T>(), "Write element must be trivially destructible");
 
-		WriteData((const_data_ptr_t)&element, sizeof(T));
+		WriteData(const_data_ptr_cast(&element), sizeof(T));
 	}
 
 	//! Write data from a string buffer directly (without length prefix)
 	void WriteBufferData(const string &str) {
-		WriteData((const_data_ptr_t)str.c_str(), str.size());
+		WriteData(const_data_ptr_cast(str.c_str()), str.size());
 	}
 	//! Write a string with a length prefix
 	void WriteString(const string &val) {
-		WriteStringLen((const_data_ptr_t)val.c_str(), val.size());
+		WriteStringLen(const_data_ptr_cast(val.c_str()), val.size());
 	}
 	void WriteStringLen(const_data_ptr_t val, idx_t len) {
 		Write<uint32_t>((uint32_t)len);
@@ -111,24 +112,29 @@ public:
 	//! Reads [read_size] bytes into the buffer
 	virtual void ReadData(data_ptr_t buffer, idx_t read_size) = 0;
 
+	//! Gets the context for the deserializer
+	virtual ClientContext &GetContext() {
+		throw InternalException("This deserializer does not have a client-context");
+	};
+
 	template <class T>
 	T Read() {
 		T value;
-		ReadData((data_ptr_t)&value, sizeof(T));
+		ReadData(data_ptr_cast(&value), sizeof(T));
 		return value;
 	}
 
 	template <class T, typename... ARGS>
-	void ReadList(vector<unique_ptr<T>> &list, ARGS &&...args) {
+	void ReadList(vector<unique_ptr<T>> &list, ARGS &&... args) {
 		auto select_count = Read<uint32_t>();
 		for (uint32_t i = 0; i < select_count; i++) {
 			auto child = T::Deserialize(*this, std::forward<ARGS>(args)...);
-			list.push_back(move(child));
+			list.push_back(std::move(child));
 		}
 	}
 
 	template <class T, class RETURN_TYPE = T, typename... ARGS>
-	unique_ptr<RETURN_TYPE> ReadOptional(ARGS &&...args) {
+	unique_ptr<RETURN_TYPE> ReadOptional(ARGS &&... args) {
 		auto has_entry = Read<bool>();
 		if (has_entry) {
 			return T::Deserialize(*this, std::forward<ARGS>(args)...);

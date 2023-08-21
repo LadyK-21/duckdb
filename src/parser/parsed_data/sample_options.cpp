@@ -1,19 +1,13 @@
 #include "duckdb/parser/parsed_data/sample_options.hpp"
 #include "duckdb/common/field_writer.hpp"
+#include "duckdb/common/serializer/format_serializer.hpp"
+#include "duckdb/common/serializer/format_deserializer.hpp"
 
 namespace duckdb {
 
+// **DEPRECATED**: Use EnumUtil directly instead.
 string SampleMethodToString(SampleMethod method) {
-	switch (method) {
-	case SampleMethod::SYSTEM_SAMPLE:
-		return "System";
-	case SampleMethod::BERNOULLI_SAMPLE:
-		return "Bernoulli";
-	case SampleMethod::RESERVOIR_SAMPLE:
-		return "Reservoir";
-	default:
-		return "Unknown";
-	}
+	return EnumUtil::ToString(method);
 }
 
 void SampleOptions::Serialize(Serializer &serializer) {
@@ -26,7 +20,7 @@ void SampleOptions::Serialize(Serializer &serializer) {
 }
 
 unique_ptr<SampleOptions> SampleOptions::Deserialize(Deserializer &source) {
-	auto result = make_unique<SampleOptions>();
+	auto result = make_uniq<SampleOptions>();
 
 	FieldReader reader(source);
 	result->sample_size = reader.ReadRequiredSerializable<Value, Value>();
@@ -39,7 +33,7 @@ unique_ptr<SampleOptions> SampleOptions::Deserialize(Deserializer &source) {
 }
 
 unique_ptr<SampleOptions> SampleOptions::Copy() {
-	auto result = make_unique<SampleOptions>();
+	auto result = make_uniq<SampleOptions>();
 	result->sample_size = sample_size;
 	result->is_percentage = is_percentage;
 	result->method = method;

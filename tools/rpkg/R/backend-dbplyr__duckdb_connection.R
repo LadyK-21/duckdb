@@ -9,11 +9,14 @@
 #' @aliases NULL
 #' @examples
 #' library(dplyr, warn.conflicts = FALSE)
-#' con <- DBI::dbConnect(duckdb::duckdb(), path = ":memory:")
+#' con <- DBI::dbConnect(duckdb(), path = ":memory:")
 #'
 #' dbiris <- copy_to(con, iris, overwrite = TRUE)
 #'
-#' dbiris %>% select(Petal.Length, Petal.Width) %>% filter(Petal.Length > 1.5) %>% head(5)
+#' dbiris %>%
+#'   select(Petal.Length, Petal.Width) %>%
+#'   filter(Petal.Length > 1.5) %>%
+#'   head(5)
 #'
 #' DBI::dbDisconnect(con, shutdown = TRUE)
 NULL
@@ -116,11 +119,9 @@ sql_translation.duckdb_connection <- function(con) {
       log = function(x, base = exp(1)) {
         if (isTRUE(all.equal(base, exp(1)))) {
           sql_expr(LN(!!x))
-        } else
-        if (base == 10) {
+        } else if (base == 10) {
           sql_expr(LOG10(!!x))
-        } else
-        if (base == 2) {
+        } else if (base == 2) {
           sql_expr(LOG2(!!x))
         } else {
           sql_expr(LOG(!!x) / LOG(!!base))
@@ -366,31 +367,13 @@ sql_escape_datetime.duckdb_connection <- function(con, x) {
   dbQLit(con, x)
 }
 
-# Customized translation for fill function
-# @param .con A \code{\link{dbConnect}} object, as returned by \code{dbConnect()}
-# @param .data Data frame
-# @param cols_to_fill Which colums to be altered
-# @param order_by_cols Defined order of variables
-# @param .direction Direction in which to fill missing values.
-# @name dbplyr_fill0
-dbplyr_fill0.duckdb_connection <- function(.con, .data, cols_to_fill, order_by_cols, .direction) {
-  dbplyr_fill0 <- pkg_method("dbplyr_fill0.SQLiteConnection", "dbplyr")
-
-  # Required because of the bug in dbplyr (con is not passed to "translate_sql(cumsum..." call)
-  # See https://github.com/tidyverse/dbplyr/pull/753
-  setcon <- pkg_method("set_current_con", "dbplyr")
-  setcon(.con)
-
-  dbplyr_fill0(.con, .data, cols_to_fill, order_by_cols, .direction)
-}
-
 # Customized handling for tbl() to allow the use of replacement scans
 # @param src .con A \code{\link{dbConnect}} object, as returned by \code{dbConnect()}
 # @param from Table or parquet/csv -files to be registered
 # @param cache Enable object cache for parquet files
 tbl.duckdb_connection <- function(src, from, cache = FALSE, ...) {
   ident_q <- pkg_method("ident_q", "dbplyr")
-  if (!DBI::dbExistsTable(src, from)) from <- ident_q(from)
+  if (!inherits(from, "sql") & !DBI::dbExistsTable(src, from)) from <- ident_q(from)
   if (cache) DBI::dbExecute(src, "PRAGMA enable_object_cache")
   NextMethod("tbl")
 }
